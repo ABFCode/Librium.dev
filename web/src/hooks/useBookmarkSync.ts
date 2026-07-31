@@ -1,8 +1,9 @@
 import { useMutation, useQuery } from "convex/react";
 import { useLiveQuery } from "dexie-react-hooks";
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo } from "react";
 import { api } from "../../convex/_generated/api";
 import { db } from "../lib/db";
+import { useSyncPushQueue } from "./useSyncPushQueue";
 import { useSyncWakeSignal } from "./useSyncWakeSignal";
 
 // Local-first bookmarks with tombstone sync (ROADMAP Phase 4).
@@ -124,8 +125,11 @@ export function useBookmarkSync({ bookId, canQuery }: UseBookmarkSyncArgs) {
 		})();
 	}, [remote, localAll, bookId]);
 
-	// Push dirty rows (fires on edit and on reconnect).
-	const pushQueueRef = useRef<Promise<void>>(Promise.resolve());
+	// Push dirty rows (fires on edit and on reconnect). SyncPushQueue
+	// serializes passes and abandons one wedged on a never-settling mutation.
+	// No stale-base handling needed here: creates are idempotent (clientKey)
+	// and deletes are tombstones, both safe under duplicate delivery.
+	const pushQueue = useSyncPushQueue(retrySync);
 	useEffect(() => {
 		void syncWakeSignal; // reconnect/backoff trigger; durable rows are re-read below
 		if (!canQuery || !localAll) {
@@ -135,11 +139,16 @@ export function useBookmarkSync({ bookId, canQuery }: UseBookmarkSyncArgs) {
 		if (dirty.length === 0) {
 			return;
 		}
-		const pushPass = async () => {
+		const pushPass = async (heartbeat: () => boolean) => {
 			const freshDirty = await syncDb.bookmarks
 				.filter((row) => row.dirty === 1)
 				.toArray();
 			for (const l of freshDirty) {
+				// An abandoned pass must not replay its stale snapshot against
+				// the fresh generation's pushes.
+				if (!heartbeat()) {
+					return;
+				}
 				try {
 					if (l.deletedAt) {
 						if (l.convexId) {
@@ -177,7 +186,7 @@ export function useBookmarkSync({ bookId, canQuery }: UseBookmarkSyncArgs) {
 				}
 			}
 		};
-		pushQueueRef.current = pushQueueRef.current.then(pushPass).catch(() => {});
+		pushQueue.schedule(pushPass);
 	}, [
 		canQuery,
 		localAll,
@@ -187,6 +196,7 @@ export function useBookmarkSync({ bookId, canQuery }: UseBookmarkSyncArgs) {
 		syncWakeSignal,
 		retrySync,
 		settleSync,
+		pushQueue,
 	]);
 
 	const createBookmark = useCallback(

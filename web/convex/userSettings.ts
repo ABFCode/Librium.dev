@@ -1,7 +1,11 @@
 import { v } from "convex/values";
 import { mutation, query } from "./_generated/server";
 import { getViewerUserId, requireViewerUserId } from "./authHelpers";
-import { nextServerVersion, observedServerVersion } from "./syncVersion";
+import {
+	cleanDeviceId,
+	nextServerVersion,
+	rejectsStaleBase,
+} from "./syncVersion";
 
 const fields = [
 	"fontScale",
@@ -80,9 +84,11 @@ export const upsert = mutation({
 				fontFamily: v.optional(v.number()),
 			}),
 		),
+		deviceId: v.optional(v.string()),
 	},
 	handler: async (ctx, args) => {
 		const userId = await requireViewerUserId(ctx);
+		const deviceId = cleanDeviceId(args.deviceId);
 		const existing = await ctx.db
 			.query("userSettings")
 			.withIndex("by_user", (q) => q.eq("userId", userId))
@@ -109,6 +115,14 @@ export const upsert = mutation({
 			const accepted = Object.fromEntries(
 				fields.map((field) => [field, args[field] !== undefined]),
 			) as SettingsAccepted;
+			const fieldDeviceIds =
+				deviceId === undefined
+					? undefined
+					: (Object.fromEntries(
+							fields
+								.filter((field) => args[field] !== undefined)
+								.map((field) => [field, deviceId]),
+						) as Partial<Record<SettingField, string>>);
 			await ctx.db.insert("userSettings", {
 				userId,
 				...settings,
@@ -117,6 +131,7 @@ export const upsert = mutation({
 				contentWidthUpdatedAt: serverVersions.contentWidth,
 				themeUpdatedAt: serverVersions.theme,
 				fontFamilyUpdatedAt: serverVersions.fontFamily,
+				fieldDeviceIds,
 				updatedAt: now,
 			});
 			return { accepted, serverVersions, settings };
@@ -138,7 +153,11 @@ export const upsert = mutation({
 		const accepted = Object.fromEntries(
 			fields.map((field) => [field, false]),
 		) as SettingsAccepted;
-		const patch: Record<string, string | number> = {};
+		const patch: Record<string, unknown> = {};
+		const fieldDeviceIds: Partial<Record<SettingField, string>> = {
+			...existing.fieldDeviceIds,
+		};
+		let deviceIdsChanged = false;
 
 		const apply = <K extends SettingField>(
 			field: K,
@@ -148,7 +167,14 @@ export const upsert = mutation({
 				return;
 			}
 			const currentVersion = serverVersions[field];
-			if (observedServerVersion(args.baseVersions?.[field]) < currentVersion) {
+			if (
+				rejectsStaleBase({
+					baseServerTime: args.baseVersions?.[field],
+					currentServerTime: currentVersion,
+					currentWriterDeviceId: existing.fieldDeviceIds?.[field],
+					requestDeviceId: deviceId,
+				})
+			) {
 				return;
 			}
 			const normalized = normalize[field](value as never) as SettingsValues[K];
@@ -158,6 +184,10 @@ export const upsert = mutation({
 			accepted[field] = true;
 			patch[field] = normalized;
 			patch[versionKeys[field]] = nextVersion;
+			if (deviceId !== undefined && fieldDeviceIds[field] !== deviceId) {
+				fieldDeviceIds[field] = deviceId;
+				deviceIdsChanged = true;
+			}
 		};
 
 		for (const field of fields) {
@@ -165,6 +195,9 @@ export const upsert = mutation({
 		}
 		if (Object.keys(patch).length > 0) {
 			patch.updatedAt = Math.max(...Object.values(serverVersions));
+			if (deviceIdsChanged) {
+				patch.fieldDeviceIds = fieldDeviceIds;
+			}
 			await ctx.db.patch(existing._id, patch);
 		}
 		return { accepted, serverVersions, settings };

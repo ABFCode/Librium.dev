@@ -158,6 +158,12 @@ export type LocalReaderSettings = {
 	fontFamily: string;
 	dirtyFields: ReaderSettingField[];
 	syncedServerTimes: Record<ReaderSettingField, number>;
+	// Device-local edit order per field (same convention as progress.editedAt).
+	// A push response may only clear a field's dirty state when no edit newer
+	// than the pushed one has landed — value equality is not a causal guard
+	// (an old response for value X must not clear a newer re-edit back to X).
+	// Optional: rows written before this field existed carry no stamps.
+	fieldEditedAt?: Partial<Record<ReaderSettingField, number>>;
 };
 
 // ── Database ─────────────────────────────────────────────────────────────────

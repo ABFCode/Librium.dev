@@ -104,6 +104,9 @@ const userBooks = defineTable({
 	statusEditedAt: v.optional(v.number()),
 	// Server-issued version for explicit status only (independent of progress).
 	statusUpdatedAt: v.optional(v.number()),
+	// Installation id that authored the current status — powers the same-device
+	// stale-base acceptance rule (see syncVersion.rejectsStaleBase).
+	statusDeviceId: v.optional(v.string()),
 })
 	.index("by_user_book", ["userId", "bookId"])
 	.index("by_user_updated", ["userId", "updatedAt"])
@@ -152,6 +155,17 @@ const userSettings = defineTable({
 	contentWidthUpdatedAt: v.optional(v.number()),
 	themeUpdatedAt: v.optional(v.number()),
 	fontFamilyUpdatedAt: v.optional(v.number()),
+	// Installation id that authored each field's current value — powers the
+	// same-device stale-base acceptance rule (syncVersion.rejectsStaleBase).
+	fieldDeviceIds: v.optional(
+		v.object({
+			fontScale: v.optional(v.string()),
+			lineHeight: v.optional(v.string()),
+			contentWidth: v.optional(v.string()),
+			theme: v.optional(v.string()),
+			fontFamily: v.optional(v.string()),
+		}),
+	),
 	updatedAt: v.number(),
 }).index("by_user", ["userId"]);
 
@@ -172,6 +186,9 @@ const collections = defineTable({
 	nameEditedAt: v.optional(v.number()),
 	// Server-issued version for collection names. nameEditedAt is legacy.
 	nameUpdatedAt: v.optional(v.number()),
+	// Installation id that authored the current name — powers the same-device
+	// stale-base acceptance rule (syncVersion.rejectsStaleBase).
+	nameDeviceId: v.optional(v.string()),
 })
 	.index("by_user", ["userId", "updatedAt"])
 	.index("by_deleted", ["deletedAt"]);
@@ -184,6 +201,9 @@ const collectionBooks = defineTable({
 	createdAt: v.number(),
 	updatedAt: v.number(),
 	deletedAt: v.optional(v.number()),
+	// Installation id that authored the current membership state — powers the
+	// same-device stale-base acceptance rule (syncVersion.rejectsStaleBase).
+	writerDeviceId: v.optional(v.string()),
 })
 	.index("by_user", ["userId", "updatedAt"])
 	.index("by_collection", ["collectionId"])

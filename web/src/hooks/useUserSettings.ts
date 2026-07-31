@@ -8,6 +8,8 @@ import {
 	type LocalReaderSettings,
 	type ReaderSettingField,
 } from "../lib/db";
+import { getSyncDeviceInfo } from "../lib/syncDevice";
+import { useSyncPushQueue } from "./useSyncPushQueue";
 import { useSyncWakeSignal } from "./useSyncWakeSignal";
 
 const STORAGE_KEY = "librium_theme";
@@ -78,7 +80,11 @@ export const useUserSettings = (options?: { pauseSync?: boolean }) => {
 	}, []);
 	const [state, setState] = useState<UserSettingsState>(initial);
 	const stateRef = useRef(state);
-	const pushQueueRef = useRef<Promise<void>>(Promise.resolve());
+	// Serialized push queue; wedged passes are abandoned and re-tried via the
+	// wake. Rejection ambiguity is resolved server-side (same-device
+	// stale-base acceptance), so responses always adopt the server's state.
+	const syncDevice = useMemo(() => getSyncDeviceInfo(), []);
+	const pushQueue = useSyncPushQueue(retrySync);
 
 	const remoteVersions = useMemo(() => {
 		if (!settings) {
@@ -191,10 +197,14 @@ export const useUserSettings = (options?: { pauseSync?: boolean }) => {
 				const sentValues = Object.fromEntries(
 					sentFields.map((field) => [field, row[field]]),
 				) as Partial<UserSettingsState>;
+				const sentEditedAt = Object.fromEntries(
+					sentFields.map((field) => [field, row.fieldEditedAt?.[field] ?? 0]),
+				) as Partial<Record<ReaderSettingField, number>>;
 				const args: Record<string, unknown> = {
 					baseVersions: Object.fromEntries(
 						sentFields.map((field) => [field, row.syncedServerTimes[field]]),
 					),
+					deviceId: syncDevice.id,
 					...sentValues,
 				};
 				try {
@@ -205,16 +215,29 @@ export const useUserSettings = (options?: { pauseSync?: boolean }) => {
 						.modify((live) => {
 							const dirty = new Set(live.dirtyFields);
 							for (const field of sentFields) {
-								const unchanged = live[field] === sentValues[field];
+								// Versions only ever advance — a late response must never
+								// wind a field's synced version back below a newer one.
 								live.syncedServerTimes[field] = Math.max(
 									live.syncedServerTimes[field],
 									result.serverVersions[field],
 								);
-								if (unchanged) {
-									live[field] = result.settings[field] as never;
-									live.syncedServerTimes[field] = result.serverVersions[field];
-									dirty.delete(field);
+								// Causal guard: only the response for the newest edit of
+								// this field may settle it. Value equality is not enough —
+								// an old response for value X must not clear a newer
+								// re-edit back to X (the re-edit would then never push).
+								const noNewerEdit =
+									(live.fieldEditedAt?.[field] ?? 0) <=
+									(sentEditedAt[field] ?? 0);
+								if (!noNewerEdit) {
+									continue;
 								}
+								// With no newer local edit, the returned state is
+								// authoritative either way: accepted fields may come back
+								// normalized (clamped/whitelisted) and must be adopted, and
+								// a rejected field lost to a genuine foreign write (the
+								// server accepts same-device stale bases).
+								live[field] = result.settings[field] as never;
+								dirty.delete(field);
 							}
 							live.dirtyFields = [...dirty];
 						});
@@ -223,9 +246,7 @@ export const useUserSettings = (options?: { pauseSync?: boolean }) => {
 					retrySync();
 				}
 			};
-			pushQueueRef.current = pushQueueRef.current
-				.then(pushPass)
-				.catch(() => {});
+			pushQueue.schedule(pushPass);
 		}, 250);
 		return () => window.clearTimeout(timeout);
 	}, [
@@ -233,9 +254,11 @@ export const useUserSettings = (options?: { pauseSync?: boolean }) => {
 		local,
 		saveSettings,
 		options?.pauseSync,
+		syncDevice,
 		syncWakeSignal,
 		retrySync,
 		settleSync,
+		pushQueue,
 	]);
 
 	const setField = useCallback(
@@ -268,6 +291,10 @@ export const useUserSettings = (options?: { pauseSync?: boolean }) => {
 				};
 				base[field] = nextValue as never;
 				base.dirtyFields = Array.from(new Set([...base.dirtyFields, field]));
+				base.fieldEditedAt = {
+					...base.fieldEditedAt,
+					[field]: Math.max(Date.now(), (base.fieldEditedAt?.[field] ?? 0) + 1),
+				};
 				await syncDb.settings.put(base);
 			});
 		},

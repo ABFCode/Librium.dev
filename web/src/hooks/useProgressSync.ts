@@ -1,9 +1,10 @@
 import { useMutation, useQuery } from "convex/react";
 import { useLiveQuery } from "dexie-react-hooks";
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo } from "react";
 import { api } from "../../convex/_generated/api";
 import { db, type LocalProgress } from "../lib/db";
 import { getSyncDeviceInfo } from "../lib/syncDevice";
+import { useSyncPushQueue } from "./useSyncPushQueue";
 import { useSyncWakeSignal } from "./useSyncWakeSignal";
 
 // Local-first reading progress with LWW sync (ROADMAP Phase 4).
@@ -140,8 +141,12 @@ export function useProgressSync({ bookId, canQuery }: UseProgressSyncArgs) {
 			.catch(() => {});
 	}, [remoteRecord, local, bookId]);
 
-	// Push dirty local edits to the server (fires on edit and on reconnect).
-	const pushQueueRef = useRef<Promise<void>>(Promise.resolve());
+	// Push dirty local edits to the server (fires on edit, on reconnect, and
+	// after a stall abandonment via the queue's wake). An abandoned push that
+	// applied unacknowledged is resolved server-side (same-device stale-base
+	// acceptance — see SyncPushQueue), so a rejection here always means a
+	// genuine foreign conflict and adopting the echo is correct.
+	const pushQueue = useSyncPushQueue(retrySync);
 	useEffect(() => {
 		void syncWakeSignal; // reconnect/backoff trigger; durable row is re-read below
 		if (!canQuery || !local?.dirty) {
@@ -176,7 +181,9 @@ export function useProgressSync({ bookId, canQuery }: UseProgressSyncArgs) {
 							p.syncedServerTime,
 							result.serverTime,
 						);
-						// Only clear dirty if no newer local edit happened meanwhile.
+						// Only clear dirty if no newer local edit happened meanwhile. A
+						// rejection is a genuine foreign conflict (the server accepts
+						// same-device stale bases), so adopting the echo is correct.
 						if (p.editedAt <= editedAt) {
 							if (!result.accepted) {
 								p.sectionIndex = result.lastSectionIndex;
@@ -194,7 +201,7 @@ export function useProgressSync({ bookId, canQuery }: UseProgressSyncArgs) {
 				retrySync();
 			}
 		};
-		pushQueueRef.current = pushQueueRef.current.then(pushPass).catch(() => {});
+		pushQueue.schedule(pushPass);
 	}, [
 		canQuery,
 		local,
@@ -204,6 +211,7 @@ export function useProgressSync({ bookId, canQuery }: UseProgressSyncArgs) {
 		syncWakeSignal,
 		retrySync,
 		settleSync,
+		pushQueue,
 	]);
 
 	const saveProgress = useCallback(

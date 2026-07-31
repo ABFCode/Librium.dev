@@ -59,7 +59,7 @@ test("a long-lived stale reader cannot overwrite newer progress from another dev
 
 	await phone.locator('button[data-tooltip="Chapters"]').click();
 	await phone.locator('.reader-drawer [data-index="2"]').click();
-	await expect(readerTitle(phone)).toHaveText(/Chapter III/, {
+	await expect(readerTitle(phone)).toHaveText(/^Chapter III\./, {
 		timeout: 20_000,
 	});
 	await phone.waitForTimeout(1_500);
@@ -68,36 +68,36 @@ test("a long-lived stale reader cannot overwrite newer progress from another dev
 	// merely its own in-memory reader state.
 	await phone.goto("/library");
 	await cardFor(phone).getByRole("link").first().click();
-	await expect(readerTitle(phone)).toHaveText(/Chapter III/, {
+	await expect(readerTitle(phone)).toHaveText(/^Chapter III\./, {
 		timeout: 20_000,
 	});
 
 	// The already-open computer must converge even though it is an old page.
 	// If it remains on chapter 1, its next page-hide save can erase the phone.
 	await computer.context().setOffline(false);
-	await expect(readerTitle(computer)).toHaveText(/Chapter III/, {
+	await expect(readerTitle(computer)).toHaveText(/^Chapter III\./, {
 		timeout: 20_000,
 	});
 	await computer.goto("/library");
 
 	// Hiding the formerly stale page must not roll the phone back.
 	await phone.reload();
-	await expect(readerTitle(phone)).toHaveText(/Chapter III/, {
+	await expect(readerTitle(phone)).toHaveText(/^Chapter III\./, {
 		timeout: 20_000,
 	});
 
 	// The reverse direction remains intentional: a real chapter choice on the
 	// computer is a new edit and should hand off to the still-open phone.
 	await cardFor(computer).getByRole("link").first().click();
-	await expect(readerTitle(computer)).toHaveText(/Chapter III/, {
+	await expect(readerTitle(computer)).toHaveText(/^Chapter III\./, {
 		timeout: 20_000,
 	});
 	await computer.locator('button[data-tooltip="Chapters"]').click();
 	await computer.locator('.reader-drawer [data-index="1"]').click();
-	await expect(readerTitle(computer)).toHaveText(/Chapter II/, {
+	await expect(readerTitle(computer)).toHaveText(/^Chapter II\./, {
 		timeout: 20_000,
 	});
-	await expect(readerTitle(phone)).toHaveText(/Chapter II/, {
+	await expect(readerTitle(phone)).toHaveText(/^Chapter II\./, {
 		timeout: 20_000,
 	});
 

@@ -6,7 +6,12 @@ import {
 	requireBookOwner,
 	requireViewerUserId,
 } from "./authHelpers";
-import { nextServerVersion, observedServerVersion } from "./syncVersion";
+import {
+	cleanDeviceId,
+	nextServerVersion,
+	observedServerVersion,
+	rejectsStaleBase,
+} from "./syncVersion";
 
 const HISTORY_LIMIT = 50;
 const SAME_CHAPTER_CHECKPOINT_FRACTION = 0.1;
@@ -32,11 +37,6 @@ const samePoint = (a: ProgressPoint, b: ProgressPoint) =>
 	a.blockIndex === b.blockIndex &&
 	a.blockOffset === b.blockOffset &&
 	a.sectionFraction === b.sectionFraction;
-
-const cleanDeviceId = (deviceId: string | undefined) => {
-	const cleaned = deviceId?.trim().slice(0, 64);
-	return cleaned || undefined;
-};
 
 const pointFromUserBook = (
 	entry: {
@@ -233,10 +233,18 @@ export const updateProgress = mutation({
 			existing?.progressUpdatedAt ??
 			(existing?.progressEditedAt !== undefined ? existing.updatedAt : 0);
 		// Optimistic concurrency: a stale offline write must not overwrite a
-		// server value it never observed. Device wall clocks are irrelevant.
+		// server value it never observed — unless this same device authored the
+		// current value, in which case the "stale" base is just this device's
+		// own lost acknowledgement (see rejectsStaleBase). Wall clocks are
+		// irrelevant either way.
 		if (
 			existing &&
-			observedServerVersion(args.baseServerTime) < currentServerTime
+			rejectsStaleBase({
+				baseServerTime: args.baseServerTime,
+				currentServerTime,
+				currentWriterDeviceId: existing.progressDeviceId,
+				requestDeviceId: cleanDeviceId(args.deviceId),
+			})
 		) {
 			return {
 				id: existing._id,
@@ -500,6 +508,7 @@ export const updateStatus = mutation({
 		// Status has its own server version so progress activity cannot make an
 		// otherwise-current offline status change stale.
 		baseServerTime: v.optional(v.number()),
+		deviceId: v.optional(v.string()),
 	},
 	handler: async (ctx, args) => {
 		const userId = await requireViewerUserId(ctx);
@@ -514,11 +523,18 @@ export const updateStatus = mutation({
 		const currentServerTime =
 			existing?.statusUpdatedAt ??
 			(existing?.statusEditedAt !== undefined ? existing.updatedAt : 0);
-		// Reject a write based on older server state. Bump updatedAt so the
-		// subscription re-emits and the losing device promptly re-adopts.
+		// Reject a write based on older server state authored by another device
+		// (same-device staleness is a lost acknowledgement — accepted; see
+		// rejectsStaleBase). Bump updatedAt so the subscription re-emits and
+		// the losing device promptly re-adopts.
 		if (
 			existing &&
-			observedServerVersion(args.baseServerTime) < currentServerTime
+			rejectsStaleBase({
+				baseServerTime: args.baseServerTime,
+				currentServerTime,
+				currentWriterDeviceId: existing.statusDeviceId,
+				requestDeviceId: cleanDeviceId(args.deviceId),
+			})
 		) {
 			await ctx.db.patch(existing._id, {
 				updatedAt: nextServerVersion(existing.updatedAt),
@@ -541,6 +557,7 @@ export const updateStatus = mutation({
 		const patch = {
 			status: args.status ?? undefined,
 			statusUpdatedAt: now,
+			statusDeviceId: cleanDeviceId(args.deviceId),
 			updatedAt: now,
 		};
 

@@ -5,7 +5,11 @@ import {
 	requireBookOwner,
 	requireViewerUserId,
 } from "./authHelpers";
-import { nextServerVersion, observedServerVersion } from "./syncVersion";
+import {
+	cleanDeviceId,
+	nextServerVersion,
+	rejectsStaleBase,
+} from "./syncVersion";
 
 // Collections: user-named, many-to-many book groups. Same sync plane as
 // bookmarks — client-generated clientKeys make offline creates idempotent,
@@ -86,6 +90,7 @@ export const renameCollection = mutation({
 		collectionId: v.id("collections"),
 		name: v.string(),
 		baseServerTime: v.optional(v.number()),
+		deviceId: v.optional(v.string()),
 	},
 	handler: async (ctx, args) => {
 		const userId = await requireViewerUserId(ctx);
@@ -105,7 +110,14 @@ export const renameCollection = mutation({
 		if (!name) {
 			throw new Error("Collection name cannot be empty.");
 		}
-		if (observedServerVersion(args.baseServerTime) < currentServerTime) {
+		if (
+			rejectsStaleBase({
+				baseServerTime: args.baseServerTime,
+				currentServerTime,
+				currentWriterDeviceId: collection.nameDeviceId,
+				requestDeviceId: cleanDeviceId(args.deviceId),
+			})
+		) {
 			return {
 				accepted: false,
 				serverTime: currentServerTime,
@@ -116,6 +128,7 @@ export const renameCollection = mutation({
 		await ctx.db.patch(args.collectionId, {
 			name,
 			nameUpdatedAt: now,
+			nameDeviceId: cleanDeviceId(args.deviceId),
 			updatedAt: now,
 		});
 		return { accepted: true, serverTime: now, name };
@@ -158,6 +171,7 @@ export const addBookMembership = mutation({
 		clientKey: v.string(),
 		createdAt: v.optional(v.number()),
 		baseServerTime: v.optional(v.number()),
+		deviceId: v.optional(v.string()),
 	},
 	handler: async (ctx, args) => {
 		const userId = await requireViewerUserId(ctx);
@@ -207,9 +221,21 @@ export const addBookMembership = mutation({
 				deleted: false,
 			};
 		}
+		const newestTupleRow = tupleRows.reduce<
+			(typeof tupleRows)[number] | undefined
+		>(
+			(latest, row) =>
+				latest === undefined || row.updatedAt > latest.updatedAt ? row : latest,
+			undefined,
+		);
 		if (
 			currentServerTime > 0 &&
-			observedServerVersion(args.baseServerTime) < currentServerTime
+			rejectsStaleBase({
+				baseServerTime: args.baseServerTime,
+				currentServerTime,
+				currentWriterDeviceId: newestTupleRow?.writerDeviceId,
+				requestDeviceId: cleanDeviceId(args.deviceId),
+			})
 		) {
 			const tombstone = keyMatch ?? tupleRows[0];
 			return {
@@ -225,6 +251,7 @@ export const addBookMembership = mutation({
 			await ctx.db.patch(tombstone._id, {
 				deletedAt: undefined,
 				updatedAt: now,
+				writerDeviceId: cleanDeviceId(args.deviceId),
 			});
 			return {
 				id: tombstone._id,
@@ -240,6 +267,7 @@ export const addBookMembership = mutation({
 			clientKey: args.clientKey,
 			createdAt: args.createdAt ?? now,
 			updatedAt: now,
+			writerDeviceId: cleanDeviceId(args.deviceId),
 		});
 		return { id, accepted: true, serverTime: now, deleted: false };
 	},
@@ -249,6 +277,7 @@ export const removeBookMembership = mutation({
 	args: {
 		membershipId: v.id("collectionBooks"),
 		baseServerTime: v.optional(v.number()),
+		deviceId: v.optional(v.string()),
 	},
 	handler: async (ctx, args) => {
 		const userId = await requireViewerUserId(ctx);
@@ -272,7 +301,21 @@ export const removeBookMembership = mutation({
 			(latest, row) => Math.max(latest, row.updatedAt),
 			0,
 		);
-		if (observedServerVersion(args.baseServerTime) < currentServerTime) {
+		const newestTupleRow = tupleRows.reduce<
+			(typeof tupleRows)[number] | undefined
+		>(
+			(latest, row) =>
+				latest === undefined || row.updatedAt > latest.updatedAt ? row : latest,
+			undefined,
+		);
+		if (
+			rejectsStaleBase({
+				baseServerTime: args.baseServerTime,
+				currentServerTime,
+				currentWriterDeviceId: newestTupleRow?.writerDeviceId,
+				requestDeviceId: cleanDeviceId(args.deviceId),
+			})
+		) {
 			return {
 				accepted: false,
 				serverTime: currentServerTime,
@@ -282,7 +325,11 @@ export const removeBookMembership = mutation({
 		const now = nextServerVersion(currentServerTime);
 		for (const row of tupleRows) {
 			if (row.deletedAt === undefined) {
-				await ctx.db.patch(row._id, { deletedAt: now, updatedAt: now });
+				await ctx.db.patch(row._id, {
+					deletedAt: now,
+					updatedAt: now,
+					writerDeviceId: cleanDeviceId(args.deviceId),
+				});
 			}
 		}
 		return { accepted: true, serverTime: now, deleted: true };

@@ -1,8 +1,10 @@
 import { useMutation, useQuery } from "convex/react";
 import { useLiveQuery } from "dexie-react-hooks";
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo } from "react";
 import { api } from "../../convex/_generated/api";
 import { db, type LocalCollection } from "../lib/db";
+import { getSyncDeviceInfo } from "../lib/syncDevice";
+import { useSyncPushQueue } from "./useSyncPushQueue";
 import { useSyncWakeSignal } from "./useSyncWakeSignal";
 
 // Local-first collections + memberships with tombstone sync — two instances
@@ -310,11 +312,15 @@ export function useCollectionSync({ canQuery }: UseCollectionSyncArgs) {
 	}, [remoteMemberships, localMemberships, localCollections]);
 
 	// ── Push (collections first, then memberships) ───────────────────────────
-	// Passes serialize on a promise queue: a liveQuery emission landing while a
+	// Passes serialize on a SyncPushQueue: a liveQuery emission landing while a
 	// pass is in flight enqueues another pass instead of being dropped (a
 	// dropped emission would strand dirty rows until the next unrelated edit).
-	// Each pass re-reads dirty rows from Dexie so it always sees fresh state.
-	const pushQueueRef = useRef<Promise<void>>(Promise.resolve());
+	// Each pass re-reads dirty rows from Dexie so it always sees fresh state,
+	// and the queue abandons a pass wedged on a never-settling mutation. A
+	// rejection is always a genuine foreign conflict (the server accepts
+	// same-device stale bases), so adopting the echo is correct.
+	const syncDevice = useMemo(() => getSyncDeviceInfo(), []);
+	const pushQueue = useSyncPushQueue(retrySync);
 	useEffect(() => {
 		void syncWakeSignal; // reconnect/backoff trigger; durable rows are re-read below
 		if (
@@ -330,7 +336,7 @@ export function useCollectionSync({ canQuery }: UseCollectionSyncArgs) {
 		if (!hasDirty) {
 			return;
 		}
-		const pushPass = async () => {
+		const pushPass = async (heartbeat: () => boolean) => {
 			const dirtyCollections = await syncDb.collections
 				.filter((l) => l.dirty === 1)
 				.toArray();
@@ -341,6 +347,11 @@ export function useCollectionSync({ canQuery }: UseCollectionSyncArgs) {
 			// just-created collection can push in the same pass.
 			const freshConvexIds = new Map<string, string>();
 			for (const l of dirtyCollections) {
+				// An abandoned pass must not replay its stale snapshot against
+				// the fresh generation's pushes.
+				if (!heartbeat()) {
+					return;
+				}
 				try {
 					if (l.deletedAt) {
 						if (l.convexId) {
@@ -369,6 +380,7 @@ export function useCollectionSync({ canQuery }: UseCollectionSyncArgs) {
 								collectionId: created.id as never,
 								name: l.name,
 								baseServerTime: created.serverTime,
+								deviceId: syncDevice.id,
 							});
 							if (renamed) {
 								acceptedServerTime = renamed.serverTime;
@@ -403,6 +415,7 @@ export function useCollectionSync({ canQuery }: UseCollectionSyncArgs) {
 						collectionId: l.convexId as never,
 						name: l.name,
 						baseServerTime: l.syncedServerTime ?? 0,
+						deviceId: syncDevice.id,
 					});
 					await syncDb.collections
 						.where("clientKey")
@@ -434,6 +447,11 @@ export function useCollectionSync({ canQuery }: UseCollectionSyncArgs) {
 				(await syncDb.collections.toArray()).map((c) => [c.clientKey, c]),
 			);
 			for (const l of dirtyMemberships) {
+				// An abandoned pass must not replay its stale snapshot against
+				// the fresh generation's pushes.
+				if (!heartbeat()) {
+					return;
+				}
 				const sentEditedAt = l.editedAt ?? l.createdAt;
 				try {
 					if (l.deletedAt) {
@@ -441,6 +459,7 @@ export function useCollectionSync({ canQuery }: UseCollectionSyncArgs) {
 							const removed = await removeRemote({
 								membershipId: l.convexId as never,
 								baseServerTime: l.syncedServerTime ?? 0,
+								deviceId: syncDevice.id,
 							});
 							const outcome = removed ?? {
 								serverTime: l.syncedServerTime ?? 0,
@@ -479,6 +498,7 @@ export function useCollectionSync({ canQuery }: UseCollectionSyncArgs) {
 						clientKey: l.clientKey,
 						createdAt: l.createdAt,
 						baseServerTime: l.syncedServerTime ?? 0,
+						deviceId: syncDevice.id,
 					});
 					if (added === null) {
 						// Collection was deleted elsewhere while this add was queued.
@@ -511,7 +531,7 @@ export function useCollectionSync({ canQuery }: UseCollectionSyncArgs) {
 				}
 			}
 		};
-		pushQueueRef.current = pushQueueRef.current.then(pushPass).catch(() => {});
+		pushQueue.schedule(pushPass);
 	}, [
 		canQuery,
 		localCollections,
@@ -521,9 +541,11 @@ export function useCollectionSync({ canQuery }: UseCollectionSyncArgs) {
 		deleteRemote,
 		addRemote,
 		removeRemote,
+		syncDevice,
 		syncWakeSignal,
 		retrySync,
 		settleSync,
+		pushQueue,
 	]);
 
 	// ── UI views ─────────────────────────────────────────────────────────────

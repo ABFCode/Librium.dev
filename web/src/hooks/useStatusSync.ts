@@ -4,6 +4,8 @@ import { useCallback, useEffect, useMemo, useRef } from "react";
 import { api } from "../../convex/_generated/api";
 import { db } from "../lib/db";
 import type { ReadingStatus } from "../lib/status";
+import { getSyncDeviceInfo } from "../lib/syncDevice";
+import { useSyncPushQueue } from "./useSyncPushQueue";
 import { useSyncWakeSignal } from "./useSyncWakeSignal";
 
 // Local-first reading status with LWW sync — the batched, library-wide
@@ -80,27 +82,37 @@ export function useStatusSync({ canQuery }: UseStatusSyncArgs) {
 		});
 	}, [remote, local]);
 
-	// Push pass: send dirty rows (fires on edit and on reconnect). Passes
-	// serialize on a promise queue — a liveQuery emission landing mid-pass
-	// (e.g. bulk "Mark as" writing row N while row 1 pushes) enqueues another
-	// pass instead of being dropped; each pass re-reads dirty rows from Dexie.
-	const pushQueueRef = useRef<Promise<void>>(Promise.resolve());
+	// Push pass: send dirty rows (fires on edit, on reconnect, and after a
+	// stall abandonment via the queue's wake). Passes serialize on a
+	// SyncPushQueue — a liveQuery emission landing mid-pass (e.g. bulk "Mark
+	// as" writing row N while row 1 pushes) enqueues another pass instead of
+	// being dropped; each pass re-reads dirty rows from Dexie. A rejection is
+	// always a genuine foreign conflict (the server accepts same-device stale
+	// bases), so adopting the echo is correct.
+	const syncDevice = useMemo(() => getSyncDeviceInfo(), []);
+	const pushQueue = useSyncPushQueue(retrySync);
 	useEffect(() => {
 		void syncWakeSignal; // reconnect/backoff trigger; durable rows are re-read below
 		if (!canQuery || !local?.some((row) => row.dirty)) {
 			return;
 		}
-		const pushPass = async () => {
+		const pushPass = async (heartbeat: () => boolean) => {
 			const dirtyRows = await syncDb.bookStatus
 				.filter((row) => row.dirty === 1)
 				.toArray();
 			for (const row of dirtyRows) {
+				// An abandoned pass must not replay its stale snapshot against
+				// the fresh generation's pushes.
+				if (!heartbeat()) {
+					return;
+				}
 				const editedAt = row.editedAt;
 				try {
 					const result = await updateStatus({
 						bookId: row.bookId as never,
 						status: row.status,
 						baseServerTime: row.syncedServerTime,
+						deviceId: syncDevice.id,
 					});
 					await syncDb.bookStatus
 						.where("bookId")
@@ -126,8 +138,17 @@ export function useStatusSync({ canQuery }: UseStatusSyncArgs) {
 				}
 			}
 		};
-		pushQueueRef.current = pushQueueRef.current.then(pushPass).catch(() => {});
-	}, [canQuery, local, updateStatus, syncWakeSignal, retrySync, settleSync]);
+		pushQueue.schedule(pushPass);
+	}, [
+		canQuery,
+		local,
+		updateStatus,
+		syncDevice,
+		syncWakeSignal,
+		retrySync,
+		settleSync,
+		pushQueue,
+	]);
 
 	// Effective explicit-status view: remote is authoritative except where an
 	// unpushed local edit exists; offline, local rows are the source.
