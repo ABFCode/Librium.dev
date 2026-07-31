@@ -44,6 +44,11 @@ export default defineConfig({
 			{
 				test: {
 					name: "node",
+					// Root-level testTimeout does not reach project configs (observed
+					// on vitest 4.1.10: the real-EPUB corpus parse hit the 5s default
+					// under full-suite CPU contention). Set explicitly per project;
+					// the corpus book gets extra headroom.
+					testTimeout: 20_000,
 					include: ["src/test/**/*.test.{ts,tsx}"],
 					exclude: [
 						"src/test/**/*.browser.test.{ts,tsx}",
@@ -57,6 +62,7 @@ export default defineConfig({
 				// Convex on the edge runtime.
 				test: {
 					name: "convex",
+					testTimeout: 10_000,
 					include: ["src/test/**/*.convex.test.{ts,tsx}"],
 					environment: "edge-runtime",
 					server: { deps: { inline: ["convex-test"] } },
@@ -65,6 +71,7 @@ export default defineConfig({
 			{
 				test: {
 					name: "browser",
+					testTimeout: 10_000,
 					// Browser-only setup (vitest-browser-react) must not load in the
 					// node project.
 					setupFiles: ["./src/test/setup.ts"],
