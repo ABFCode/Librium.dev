@@ -309,8 +309,19 @@
 
 	/* Kindle-style page-turn zones: the margins beside the text column are
      clickable (prev/next chapter), with a chevron that appears on hover.
-     Pointer-only affordance — hidden on touch/narrow screens. */
+     Pointer-only affordance — hidden on touch/narrow screens.
+
+     --reader-edge-gap is the dead gutter between the text column and where
+     the clickable zone starts: clicks that land near the text (ending a
+     selection, refocusing the window) must not flip chapters. The 44px
+     floor keeps a usable target on narrow windows, where it may eat into
+     the gap rather than vanish. */
 	.reader-edge-nav {
+		--reader-edge-gap: 64px;
+		/* Outer-edge inset (scrollbar reserve on the right); the width calc
+       subtracts it so both zones' INNER edges sit exactly one gap from
+       the text column. */
+		--reader-edge-inset: 0px;
 		position: absolute;
 		top: 0;
 		bottom: 0;
@@ -318,7 +329,15 @@
 		display: none;
 		align-items: center;
 		justify-content: center;
-		width: max(56px, calc((100% - var(--reader-content-w, 720px)) / 2 - 32px));
+		width: max(
+			44px,
+			calc(
+				(100% - var(--reader-content-w, 720px)) /
+				2 -
+				var(--reader-edge-gap) -
+				var(--reader-edge-inset)
+			)
+		);
 		background: transparent;
 		border: none;
 		color: var(--reader-muted);
@@ -333,6 +352,7 @@
 	/* Inset from the right so the scrollbar stays reachable. */
 	.reader-edge-nav.is-right {
 		right: 14px;
+		--reader-edge-inset: 14px;
 	}
 
 	.reader-edge-nav:hover {
