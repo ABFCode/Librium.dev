@@ -153,7 +153,17 @@ export function useBookmarkSync({ bookId, canQuery }: UseBookmarkSyncArgs) {
 					if (l.deletedAt) {
 						if (l.convexId) {
 							await deleteRemote({ bookmarkId: l.convexId as never });
-							await syncDb.bookmarks.delete(l.clientKey);
+							// Keep the tombstone (now clean) until the merge observes the
+							// server-side tombstone. Deleting the local row here opens a
+							// resurrection window: a stale remote emission from before the
+							// delete would match no local row and re-insert the dead
+							// bookmark until the next emission purges it again.
+							await syncDb.bookmarks
+								.where("clientKey")
+								.equals(l.clientKey)
+								.modify((row) => {
+									row.dirty = 0;
+								});
 						}
 						// No convexId: an unacknowledged create — the merge pass settles
 						// it once the server list confirms whether it landed.
