@@ -1,6 +1,8 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useQuery } from "convex/react";
+import { useEffect } from "react";
 import { api } from "../../convex/_generated/api";
+import { Icon } from "../components/Icon";
 import { RequireAuth } from "../components/RequireAuth";
 import { type QueueItem, useImportFlow } from "../hooks/useImportFlow";
 import { filesFromDataTransfer } from "../lib/fileTree";
@@ -69,7 +71,24 @@ function ImportPage() {
 		isAuthenticated,
 		submit,
 		addFiles,
+		removeQueued,
+		clearQueued,
 	} = useImportFlow();
+
+	// A long batch runs entirely in this tab: the queue holds File handles that
+	// cannot survive navigation, so leaving mid-run silently drops the rest.
+	// Ask first. (The in-flight book itself is safe either way — its staged
+	// upload is retried by the library's pending-upload sync.)
+	useEffect(() => {
+		if (!isUploading) {
+			return;
+		}
+		const warn = (event: BeforeUnloadEvent) => {
+			event.preventDefault();
+		};
+		window.addEventListener("beforeunload", warn);
+		return () => window.removeEventListener("beforeunload", warn);
+	}, [isUploading]);
 
 	const handleDrop = async (event: React.DragEvent) => {
 		event.preventDefault();
@@ -179,6 +198,17 @@ function ImportPage() {
 
 					{queue.length > 0 ? (
 						<div className="flex flex-col gap-1.5">
+							{files.length > 1 ? (
+								<div className="flex justify-end">
+									<button
+										type="button"
+										className="text-xs text-[var(--muted)] underline"
+										onClick={clearQueued}
+									>
+										Remove all {files.length} queued
+									</button>
+								</div>
+							) : null}
 							{queue.map((item) => (
 								<div
 									key={item.id}
@@ -201,6 +231,16 @@ function ImportPage() {
 									<span className={`queue-status shrink-0 ${statusChip(item)}`}>
 										{statusLabel(item)}
 									</span>
+									{item.status === "queued" ? (
+										<button
+											type="button"
+											className="queue-remove"
+											aria-label={`Remove ${item.file.name}`}
+											onClick={() => removeQueued(item.id)}
+										>
+											<Icon name="close" size={14} />
+										</button>
+									) : null}
 								</div>
 							))}
 						</div>

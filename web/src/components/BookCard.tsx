@@ -124,10 +124,11 @@ function BookCardImpl({
 			<div className="book-meta">
 				<div className="book-text">
 					<Link
-						className="book-title truncate text-sm font-semibold"
+						className="book-title text-sm font-semibold"
 						to="/reader/$bookId"
 						params={{ bookId: book._id }}
 						onClick={guardSelect}
+						title={book.title}
 					>
 						{book.title}
 					</Link>

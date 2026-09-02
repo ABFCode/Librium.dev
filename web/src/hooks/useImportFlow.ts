@@ -37,6 +37,9 @@ export const useImportFlow = () => {
 	const [error, setError] = useState<string | null>(null);
 	const [isUploading, setIsUploading] = useState(false);
 	const runningRef = useRef(false);
+	// Queued items removed after a run started. submit() iterates a snapshot,
+	// so it consults this before starting each item.
+	const removedRef = useRef(new Set<string>());
 
 	// Files still waiting to be imported (kept for compatibility with callers).
 	const files = queue.filter((q) => q.status === "queued").map((q) => q.file);
@@ -230,6 +233,9 @@ export const useImportFlow = () => {
 		// Sequential: one book at a time keeps memory bounded (parse runs in a
 		// worker now, but each payload is large) and failures isolated per file.
 		for (const item of pending) {
+			if (removedRef.current.has(item.id)) {
+				continue;
+			}
 			setItem(item.id, { status: "importing" });
 			try {
 				const { title, warning } = await importOne(item.file);
@@ -282,6 +288,27 @@ export const useImportFlow = () => {
 		);
 	};
 
+	// Only items that have not started can be removed; an in-flight import is
+	// allowed to finish (its half-done state is retried by the library's
+	// pending-upload sync, not abandoned).
+	const removeQueued = (id: string) => {
+		removedRef.current.add(id);
+		setQueue((prev) =>
+			prev.filter((item) => !(item.id === id && item.status === "queued")),
+		);
+	};
+
+	const clearQueued = () => {
+		setQueue((prev) => {
+			for (const item of prev) {
+				if (item.status === "queued") {
+					removedRef.current.add(item.id);
+				}
+			}
+			return prev.filter((item) => item.status !== "queued");
+		});
+	};
+
 	return {
 		queue,
 		files,
@@ -294,5 +321,7 @@ export const useImportFlow = () => {
 		submit,
 		addFiles,
 		clearFinished,
+		removeQueued,
+		clearQueued,
 	};
 };

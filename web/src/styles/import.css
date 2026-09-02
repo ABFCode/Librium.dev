@@ -75,4 +75,32 @@
 		background: color-mix(in srgb, var(--surface-3) 80%, transparent);
 		color: var(--muted);
 	}
+
+	/* Per-row remove for items that have not started importing. */
+	.queue-remove {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 28px;
+		height: 28px;
+		flex: 0 0 28px;
+		border-radius: var(--radius-sm);
+		border: none;
+		background: transparent;
+		color: var(--muted);
+		transition: 120ms ease;
+	}
+
+	.queue-remove:hover {
+		background: color-mix(in srgb, var(--surface-3) 90%, transparent);
+		color: var(--ink);
+	}
+
+	@media (pointer: coarse) {
+		.queue-remove {
+			width: 44px;
+			height: 44px;
+			flex-basis: 44px;
+		}
+	}
 }
