@@ -34,13 +34,19 @@
 		transform: translateZ(0);
 	}
 
+	/* Two lines, always two lines tall: webnovel titles are long and
+	   front-loaded with noise, so one line often shows the least useful
+	   part, and a fixed height keeps grid rows aligned when a title is short.
+	   The full title is available on hover via the title attribute. */
 	.book-title {
 		color: var(--ink);
 		line-height: 1.3;
+		min-height: calc(1.3em * 2);
 		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-		display: block;
+		display: -webkit-box;
+		-webkit-line-clamp: 2;
+		-webkit-box-orient: vertical;
+		overflow-wrap: anywhere;
 	}
 
 	.book-author {

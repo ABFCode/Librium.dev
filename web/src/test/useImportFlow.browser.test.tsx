@@ -70,3 +70,54 @@ describe("useImportFlow", () => {
 		expect(result.current.files).toHaveLength(2);
 	});
 });
+
+describe("useImportFlow queue removal", () => {
+	const epub = (name: string) =>
+		new File(["not really an epub"], name, { type: "application/epub+zip" });
+
+	it("removes a queued file before import starts", async () => {
+		const { result, act } = await renderHook(() => useImportFlow());
+		await act(() => {
+			result.current.addFiles([epub("a.epub"), epub("b.epub")]);
+		});
+		expect(result.current.files).toHaveLength(2);
+		const idB = result.current.queue[1]?.id ?? "";
+		await act(() => {
+			result.current.removeQueued(idB);
+		});
+		expect(result.current.files.map((f) => f.name)).toEqual(["a.epub"]);
+	});
+
+	it("clears every queued file at once", async () => {
+		const { result, act } = await renderHook(() => useImportFlow());
+		await act(() => {
+			result.current.addFiles([epub("a.epub"), epub("b.epub"), epub("c.epub")]);
+		});
+		await act(() => {
+			result.current.clearQueued();
+		});
+		expect(result.current.files).toHaveLength(0);
+		expect(result.current.queue).toHaveLength(0);
+	});
+
+	it("skips a queued item removed while an earlier one is importing", async () => {
+		const { result, act } = await renderHook(() => useImportFlow());
+		await act(() => {
+			result.current.addFiles([epub("first.epub"), epub("second.epub")]);
+		});
+		const idSecond = result.current.queue[1]?.id ?? "";
+		// Start the run (first.epub begins importing and fails fast on bogus
+		// bytes), then remove second.epub before the loop reaches it.
+		let run: Promise<void> = Promise.resolve();
+		await act(() => {
+			run = result.current.submit();
+			result.current.removeQueued(idSecond);
+		});
+		await act(async () => {
+			await run;
+		});
+		const names = result.current.queue.map((item) => item.file.name);
+		expect(names).toEqual(["first.epub"]);
+		expect(result.current.queue[0]?.status).toBe("failed");
+	});
+});

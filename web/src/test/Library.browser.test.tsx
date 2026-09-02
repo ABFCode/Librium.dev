@@ -169,6 +169,14 @@ describe("Library", () => {
 		);
 	});
 
+	it("exposes the full title on hover for the clamped card title", async () => {
+		// The two-line clamp itself is stylesheet-driven (library.css) and is
+		// checked against real CSS in e2e; here we pin the hover affordance.
+		const screen = await render(<Library />);
+		const title = screen.container.querySelector(".book-title");
+		expect(title?.getAttribute("title")).toBe(title?.textContent);
+	});
+
 	it("persists sort selection", async () => {
 		const screen = await render(<Library />);
 		await screen.getByText("Title").click();
